@@ -3,10 +3,10 @@ name: Build And Run OpenAiCodeReview By Main Maven Jar
 on:
   push:
     branches:
-      - *
+      - '*'
   pull_request:
     branches:
-      - *
+      - '*'
 
 jobs:
   build:
@@ -16,7 +16,7 @@ jobs:
       - name: CheckOut repository
         uses: actions/checkout@v4
         with:
-          fatch-depth:2
+          fetch-depth: 2
 
       - name: Set up JDK 11
         uses: actions/setup-java@v4
@@ -31,4 +31,4 @@ jobs:
         run: mvn dependency:copy -Dartifact=cn.xiaoxin:openai-code-review-sdk:1.0 -DoutputDirectory=./libs
 
       - name: Run Code Review
-        run: java -jar ./lib/openai-code-review-sdk-1.0.jar
+        run: java -jar ./libs/openai-code-review-sdk-1.0.jar
