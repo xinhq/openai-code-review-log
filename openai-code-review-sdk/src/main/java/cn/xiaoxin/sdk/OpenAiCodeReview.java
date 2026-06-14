@@ -1,25 +1,13 @@
 package cn.xiaoxin.sdk;
 
-import cn.xiaoxin.sdk.domain.model.ChatCompletionRequest;
-import cn.xiaoxin.sdk.domain.model.ChatCompletionSyncResponse;
-import cn.xiaoxin.sdk.domain.model.Message;
-import cn.xiaoxin.sdk.domain.model.Model;
-import cn.xiaoxin.sdk.types.util.BearerTokenUtils;
-import cn.xiaoxin.sdk.types.util.WXAccessTokenUtils;
-import com.alibaba.fastjson2.JSON;
-import org.eclipse.jgit.api.Git;
-import org.eclipse.jgit.api.errors.GitAPIException;
-import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
+import cn.xiaoxin.sdk.domain.service.impl.OpenAiCodeReviewService;
+import cn.xiaoxin.sdk.infrastructure.git.GitCommand;
+import cn.xiaoxin.sdk.infrastructure.openai.IOpenAI;
+import cn.xiaoxin.sdk.infrastructure.openai.impl.ChatGLM;
+import cn.xiaoxin.sdk.infrastructure.weixin.impl.WeiXin;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import java.io.*;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
-import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.Random;
-import java.util.Scanner;
 
 /**
  * @Author: xhq
@@ -28,162 +16,63 @@ import java.util.Scanner;
  * @Version: 1.0
  */
 public class OpenAiCodeReview {
-    public static void main(String[] args) throws Exception{
-        System.out.println("openai 代码评审，测试执行");
 
-        String token = System.getenv("GITHUB_TOKEN");
-        if (null == token || token.isEmpty()) {
-            throw new RuntimeException("token is null");
-        }
+    private static final Logger logger = LoggerFactory.getLogger(OpenAiCodeReview.class);
 
-        // 1. 代码检出
-        ProcessBuilder processBuilder = new ProcessBuilder("git", "diff", "HEAD~1", "HEAD");
-        processBuilder.directory(new File("."));
+    // 配置配置
+    private String weixin_appid = "wx28bfbca84a4d66e0";
+    private String weixin_secret = "300bd673fcccd03195f3af933bbc3521";
+    private String weixin_touser = "otfOo6lF6gqhan32BuEAj252Z2z4";
+    private String weixin_template_id = "xQXZFaATarDvBZIkF3b7NCiCxyBk9miFkSrTydG5ZNM";
 
-        Process process = processBuilder.start();
+    // ChatGLM 配置
+    private String chatglm_apiHost = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
+    private String chatglm_apiKeySecret = "";
 
-        BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-        String line;
+    // Github 配置
+    private String github_review_log_uri;
+    private String github_token;
 
-        StringBuilder diffCode = new StringBuilder();
-        while ((line = reader.readLine()) != null) {
-            diffCode.append(line);
-        }
+    // 工程配置 - 自动获取
+    private String github_project;
+    private String github_branch;
+    private String github_author;
 
-        int exitCode = process.waitFor();
-        System.out.println("Exited with code:" + exitCode);
+    public static void main(String[] args) throws Exception {
+        GitCommand gitCommand = new GitCommand(
+                getEnv("GITHUB_REVIEW_LOG_URI"),
+                getEnv("GITHUB_TOKEN"),
+                getEnv("COMMIT_PROJECT"),
+                getEnv("COMMIT_BRANCH"),
+                getEnv("COMMIT_AUTHOR"),
+                getEnv("COMMIT_MESSAGE")
+        );
 
-        System.out.println("diff code：" + diffCode.toString());
+        /**
+         * 项目：{{repo_name.DATA}} 分支：{{branch_name.DATA}} 作者：{{commit_author.DATA}} 说明：{{commit_message.DATA}}
+         */
+        WeiXin weiXin = new WeiXin(
+                getEnv("WEIXIN_APPID"),
+                getEnv("WEIXIN_SECRET"),
+                getEnv("WEIXIN_TOUSER"),
+                getEnv("WEIXIN_TEMPLATE_ID")
+        );
 
-        // 2. chatglm 代码评审
-        String log = codeReview(diffCode.toString());
-        System.out.println("code review：" + log);
 
-        // 3. 写入评审日志
-        String logUrl = writeLog(token, log);
-        System.out.println("writeLog：" + logUrl);
+        IOpenAI openAI = new ChatGLM(getEnv("CHATGLM_APIHOST"), getEnv("CHATGLM_APIKEYSECRET"));
 
-        // 4. 消息通知
-        System.out.println("pushMessage" + logUrl);
-        pushMessage(logUrl);
+        OpenAiCodeReviewService openAiCodeReviewService = new OpenAiCodeReviewService(gitCommand, openAI, weiXin);
+        openAiCodeReviewService.exec();
 
-    }
-    private static void pushMessage(String logUrl) {
-        String accessToken = WXAccessTokenUtils.getAccessToken();
-        System.out.println(accessToken);
-
-        Message message = new Message();
-        message.put("project", "big-market");
-        message.put("review", logUrl);
-        message.setUrl(logUrl);
-
-        String url = String.format("https://api.weixin.qq.com/cgi-bin/message/template/send?access_token=%s", accessToken);
-        sendPostRequest(url, JSON.toJSONString(message));
-    }
-    public static void sendPostRequest(String urlString, String jsonBody) {
-        try {
-            URL url = new URL(urlString);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("POST");
-            conn.setRequestProperty("Content-Type", "application/json");
-            conn.setRequestProperty("Accept", "application/json");
-            conn.setDoOutput(true);
-
-            try (OutputStream os = conn.getOutputStream()) {
-                byte[] input = jsonBody.getBytes(StandardCharsets.UTF_8);
-                os.write(input, 0, input.length);
-            }
-
-            try (Scanner scanner = new Scanner(conn.getInputStream(), StandardCharsets.UTF_8.name())) {
-                String response = scanner.useDelimiter("\\A").next();
-                System.out.println(response);
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
-    public static String codeReview(String diffCode) throws Exception {
-        String apiKeySecret = "d7e33c0c5e1743dcb2b7c54c7a8b6372.mICv5C829HLlaBVn";
-        String token = BearerTokenUtils.getToken(apiKeySecret);
-
-        URL url = new URL("https://open.bigmodel.cn/api/paas/v4/chat/completions");
-        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-
-        connection.setRequestMethod("POST");
-        connection.setRequestProperty("Authorization", "Bearer " + token);
-        connection.setRequestProperty("Content-Type", "application/json");
-        connection.setRequestProperty("User-Agent", "Mozilla/4.0 (compatible; MSIE 5.0; Windows NT; DigExt)");
-        connection.setDoOutput(true);
-
-        ChatCompletionRequest chatCompletionRequest = new ChatCompletionRequest();
-        chatCompletionRequest.setModel(Model.GLM_4_FLASH.getCode());
-        chatCompletionRequest.setMessages(new ArrayList<ChatCompletionRequest.Prompt>() {
-            private static final long serialVersionUID = -7988151926241837899L;
-
-            {
-                add(new ChatCompletionRequest.Prompt("user", "你是一个高级编程架构师，精通各类场景方案、架构设计和编程语言请，请您根据git diff记录，对代码做出评审。代码如下:"));
-                add(new ChatCompletionRequest.Prompt("user", diffCode));
-            }
-        });
-
-        try (OutputStream os = connection.getOutputStream()) {
-            byte[] input = JSON.toJSONString(chatCompletionRequest).getBytes(StandardCharsets.UTF_8);
-            os.write(input);
-        }
-
-        int responseCode = connection.getResponseCode();
-        System.out.println(responseCode);
-
-        BufferedReader in = new BufferedReader(new InputStreamReader(connection.getInputStream()));
-        String inputLine;
-
-        StringBuilder content = new StringBuilder();
-        while ((inputLine = in.readLine()) != null) {
-            content.append(inputLine);
-        }
-
-        in.close();
-        connection.disconnect();
-
-        System.out.println("评审结果：" + content.toString());
-
-        ChatCompletionSyncResponse response = JSON.parseObject(content.toString(), ChatCompletionSyncResponse.class);
-        return response.getChoices().get(0).getMessage().getContent();
+        logger.info("openai-code-review done!");
     }
 
-    public static String writeLog(String token,String log) throws GitAPIException, IOException {
-        Git git = Git.cloneRepository()
-                .setURI("https://github.com/yigexiaomayi/openai-code-review-log")
-                .setDirectory(new File("repo"))
-                .setCredentialsProvider(new UsernamePasswordCredentialsProvider(token, ""))
-                .call();
-
-        String dateFolderName = new SimpleDateFormat("yyyy-MM-dd").format(new Date());
-        File dateFolder = new File("repo/" + dateFolderName);
-        if (!dateFolder.exists()) {
-            dateFolder.mkdirs();
+    private static String getEnv(String key) {
+        String value = System.getenv(key);
+        if (null == value || value.isEmpty()) {
+            throw new RuntimeException("value is null");
         }
-
-        String fileName = generateRandomString(12) + ".md";
-        File newFile = new File(dateFolder, fileName);
-        try (FileWriter writer = new FileWriter(newFile)) {
-            writer.write(log);
-        }
-
-        git.add().addFilepattern(dateFolderName + "/" + fileName).call();
-        git.commit().setMessage("Add new file").call();
-        git.push().setCredentialsProvider(new UsernamePasswordCredentialsProvider(token, "")).call();
-
-        return "https://github.com/yigexiaomayi/openai-code-review-log/blob/master/" + dateFolderName + "/" + fileName;
+        return value;
     }
 
-    private static String generateRandomString(int length) {
-        String characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-        Random random = new Random();
-        StringBuilder sb = new StringBuilder(length);
-        for (int i = 0; i < length; i++) {
-            sb.append(characters.charAt(random.nextInt(characters.length())));
-        }
-        return sb.toString();
-    }
 }
