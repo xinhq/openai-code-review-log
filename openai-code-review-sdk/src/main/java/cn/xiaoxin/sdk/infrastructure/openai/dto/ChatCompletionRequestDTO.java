@@ -1,8 +1,8 @@
 package cn.xiaoxin.sdk.infrastructure.openai.dto;
 
-import plus.gaga.middleware.sdk.domain.model.Model;
 
 import java.util.List;
+import cn.xiaoxin.sdk.domain.model.Model;
 
 public class ChatCompletionRequestDTO {
 
